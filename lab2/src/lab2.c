@@ -4,14 +4,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
-#include <stdarg.h> // ¥Î©ó¥iÅÜ°Ñ¼Æ
+#include <stdarg.h> // ç”¨æ–¼å¯è®Šåƒæ•¸
 #include "arp.h"
 #include "netdevice.h"
 #include "util.h"
 
 #define ARP_TABLE_SIZE 10
 
-/* «H¥ôªº ARP ªí */
+/* ä¿¡ä»»çš„ ARP è¡¨ */
 typedef struct {
     uint8_t ip[4];
     uint8_t mac[6];
@@ -20,16 +20,75 @@ typedef struct {
 arptable_entry_t arptable[ARP_TABLE_SIZE];
 int arptable_count = 0;
 
-/* ¥»¦aºôµ¸°t¸m */
+/* æœ¬åœ°ç¶²çµ¡é…ç½® */
 uint8_t myethaddr[] = { 0x00, 0x15, 0x5d, 0xbc, 0x06, 0x73 };
 uint8_t myipaddr[] = { 172, 17, 151, 35 };
 uint8_t defarpip[] = { 172, 17, 144, 1 };
 
-/* ¤é»x¤å¥ó¥ş§½ÅÜ¼Æ */
+/* æ—¥èªŒæ–‡ä»¶å…¨å±€è®Šæ•¸ */
 FILE* log_file;
 
+
+
 /*
- * execute_iptables() - °õ¦æ iptables ©R¥O
+ * log_message() - å¯«å…¥æ—¥èªŒæ–‡ä»¶ä¸¦è¼¸å‡ºåˆ°æ§åˆ¶å°
+ */
+void log_message(const char* format, ...) {
+    va_list args;
+    time_t now = time(NULL);
+    struct tm* tm_info = localtime(&now);
+    char timestamp[20];
+
+    // æ ¼å¼åŒ–æ™‚é–“æˆ³ "YYYY-MM-DD HH:MM:SS"
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
+
+    // å°‡æ¶ˆæ¯è¼¸å‡ºåˆ°æ§åˆ¶å°
+    va_start(args, format);
+    printf("[%s] ", timestamp);
+    vprintf(format, args);
+    va_end(args);
+
+    // åŒæ™‚å¯«å…¥åˆ°æ—¥èªŒæ–‡ä»¶
+    if (log_file) {
+        va_start(args, format);
+        fprintf(log_file, "[%s] ", timestamp);
+        vfprintf(log_file, format, args);
+        va_end(args);
+    }
+}
+
+/*
+ * arptable_existed() - æª¢æŸ¥ ARP è¡¨ä¸­æ˜¯å¦å­˜åœ¨å°æ‡‰çš„ IP åœ°å€
+ * \return å¦‚æœæ‰¾åˆ°ï¼Œè¿”å›å°æ‡‰çš„ MAC åœ°å€ï¼›å¦‚æœæ‰¾ä¸åˆ°ï¼Œè¿”å› NULLã€‚
+ */
+uint8_t* arptable_existed(uint8_t* ipaddr) {
+    for (int i = 0; i < arptable_count; i++) {
+        if (memcmp(arptable[i].ip, ipaddr, 4) == 0) {
+            return arptable[i].mac;
+        }
+    }
+    return NULL;
+}
+
+/*
+ * arptable_add() - å°‡æ–°çš„ IP-MAC æ˜ å°„æ·»åŠ åˆ° ARP è¡¨
+ */
+void arptable_add(uint8_t* ip, uint8_t* mac) {
+    if (arptable_count >= ARP_TABLE_SIZE) {
+        log_message("[Warning!] ARP table is full, unable to add more entries.\n");
+        return;
+    }
+    memcpy(arptable[arptable_count].ip, ip, 4);
+    memcpy(arptable[arptable_count].mac, mac, 6);
+    arptable_count++;
+    /*log_message("[DEBUG] Preparing to add: IP=%d.%d.%d.%d, MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);*/
+    log_message("[INFO] Added to ARP table: IP=%d.%d.%d.%d, MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
+        ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
+/*
+ * execute_iptables() - åŸ·è¡Œ iptables å‘½ä»¤
  */
 void execute_iptables(const char* command);
 void execute_iptables(const char* command) {
@@ -43,88 +102,33 @@ void execute_iptables(const char* command) {
 }
 
 /*
- * log_message() - ¼g¤J¤é»x¤å¥ó¨Ã¿é¥X¨ì±±¨î¥x
- */
-void log_message(const char* format, ...) {
-    va_list args;
-    time_t now = time(NULL);
-    struct tm* tm_info = localtime(&now);
-    char timestamp[20];
-
-    // ®æ¦¡¤Æ®É¶¡ÂW "YYYY-MM-DD HH:MM:SS"
-    strftime(timestamp, sizeof(timestamp), "%Y-%m-%d %H:%M:%S", tm_info);
-
-    // ±N®ø®§¿é¥X¨ì±±¨î¥x
-    va_start(args, format);
-    printf("[%s] ", timestamp);
-    vprintf(format, args);
-    va_end(args);
-
-    // ¦P®É¼g¤J¨ì¤é»x¤å¥ó
-    if (log_file) {
-        va_start(args, format);
-        fprintf(log_file, "[%s] ", timestamp);
-        vfprintf(log_file, format, args);
-        va_end(args);
-    }
-}
-
-/*
- * arptable_existed() - ÀË¬d ARP ªí¤¤¬O§_¦s¦b¹ïÀ³ªº IP ¦a§}
- * \return ¦pªG§ä¨ì¡Aªğ¦^¹ïÀ³ªº MAC ¦a§}¡F¦pªG§ä¤£¨ì¡Aªğ¦^ NULL¡C
- */
-uint8_t* arptable_existed(uint8_t* ipaddr) {
-    for (int i = 0; i < arptable_count; i++) {
-        if (memcmp(arptable[i].ip, ipaddr, 4) == 0) {
-            return arptable[i].mac;
-        }
-    }
-    return NULL;
-}
-
-/*
- * arptable_add() - ±N·sªº IP-MAC ¬M®g²K¥[¨ì ARP ªí
- */
-void arptable_add(uint8_t* ip, uint8_t* mac) {
-    if (arptable_count >= ARP_TABLE_SIZE) {
-        log_message("[Warning!] ARP table is full, unable to add more entries.\n");
-        return;
-    }
-    memcpy(arptable[arptable_count].ip, ip, 4);
-    memcpy(arptable[arptable_count].mac, mac, 6);
-    arptable_count++;
-    log_message("[DEBUG] Preparing to add: IP=%d.%d.%d.%d, MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
-        ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-    log_message("[INFO] Added to ARP table: IP=%d.%d.%d.%d, MAC=%02x:%02x:%02x:%02x:%02x:%02x\n",
-        ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-}
-
-/*
- * detect_arp_spoof() - ÀË´ú ARP ´ÛÄF
+ * detect_arp_spoof() - æª¢æ¸¬ ARP æ¬ºé¨™
  */
 void detect_arp_spoof(uint8_t* ip, uint8_t* mac) {
     uint8_t* expected_mac = arptable_existed(ip);
     if (expected_mac != NULL && memcmp(expected_mac, mac, 6) != 0) {
-        // ¤é»xÄµ§i
+        // æ—¥èªŒè­¦å‘Š
         log_message("[Warning!] ARP spoofing detected! IP=%d.%d.%d.%d, MAC=%02x:%02x:%02x:%02x:%02x:%02x (expected %02x:%02x:%02x:%02x:%02x:%02x)\n",
             ip[0], ip[1], ip[2], ip[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
             expected_mac[0], expected_mac[1], expected_mac[2], expected_mac[3], expected_mac[4], expected_mac[5]);
 
-        // ²Õ«Ø«ÊÂê IP ªº iptables ©R¥O
+        // çµ„å»ºå°é– IP çš„ iptables å‘½ä»¤
         char ip_str[20];
         snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
         char command[128];
         snprintf(command, sizeof(command), "iptables -A INPUT -s %s -j DROP", ip_str);
 
-        // °õ¦æ«ÊÂê©R¥O
+        // åŸ·è¡Œå°é–å‘½ä»¤
         execute_iptables(command);
+    }
+    else {
+        arptable_add(ip, mac); // æ–°çš„ IP-MAC é…å°æ‡‰è©²è¢«æ·»åŠ åˆ° ARP è¡¨
     }
 }
 
 
-
 /*
- * clear_iptables_rules() - ²M²zÂÂªº iptables ³W«h
+ * clear_iptables_rules() - æ¸…ç†èˆŠçš„ iptables è¦å‰‡
  */
 void clear_iptables_rules() {
     const char* command = "iptables -F";
@@ -133,39 +137,39 @@ void clear_iptables_rules() {
 
 
 /*
- * main_proc() - ¥Dµ{§ÇÅŞ¿è
+ * main_proc() - ä¸»ç¨‹åºé‚è¼¯
  */
 int main_proc(netdevice_t* p) {
     int key;
     char buf[MAX_LINEBUF];
     ipaddr_t ip;
 
-    clear_iptables_rules();//²M²zÂÂªº iptables ³W«h
+    clear_iptables_rules();//æ¸…ç†èˆŠçš„ iptables è¦å‰‡
 
 #if (FG_ARP_SEND_REQUEST == 1)
     /*
-     * µo°e ARP ½Ğ¨D¨ìÀq»{ IP ¦a§}
+     * ç™¼é€ ARP è«‹æ±‚åˆ°é»˜èª IP åœ°å€
      */
     arp_request(p, defarpip);
 #endif /* FG_ARP_REQUEST */
 
     while (1) {
         /*
-         * ³B²z®·Àòªº¼Æ¾Ú¥]
+         * è™•ç†æ•ç²çš„æ•¸æ“šåŒ…
          */
         if (netdevice_rx(p) == -1) {
             break;
         }
 
-        /* ¨ä¥LÅŞ¿è¥i¥H´¡¤J¦¹³B */
+        /* å…¶ä»–é‚è¼¯å¯ä»¥æ’å…¥æ­¤è™• */
 
         /*
-         * ÀË´ú¬O§_¦³¥Î¤á¿é¤J
+         * æª¢æ¸¬æ˜¯å¦æœ‰ç”¨æˆ¶è¼¸å…¥
          */
         if (!readready()) {
             continue;
         }
-        /* ¦pªG¥Î¤á«ö¤U¦^¨®Áä¡A°h¥Xµ{§Ç */
+        /* å¦‚æœç”¨æˆ¶æŒ‰ä¸‹å›è»Šéµï¼Œé€€å‡ºç¨‹åº */
         if ((key = fgetc(stdin)) == '\n') {
             break;
         }
@@ -189,7 +193,7 @@ int main(int argc, char* argv[]) {
     netdevice_t* p;
 
     /*
-     * ¥´¶}¤é»x¤å¥ó
+     * æ‰“é–‹æ—¥èªŒæ–‡ä»¶
      */
     log_file = fopen("log.txt", "a");
     if (!log_file) {
@@ -198,7 +202,7 @@ int main(int argc, char* argv[]) {
     }
 
     /*
-     * Àò¨úºôµ¸±µ¤f¦WºÙ
+     * ç²å–ç¶²çµ¡æ¥å£åç¨±
      */
     if (argc == 2) {
         strcpy(devname, argv[1]);
@@ -208,7 +212,7 @@ int main(int argc, char* argv[]) {
     }
 
     /*
-     * ¥´¶}«ü©wªº±µ¤f
+     * æ‰“é–‹æŒ‡å®šçš„æ¥å£
      */
     if ((p = netdevice_open(devname, errbuf)) == NULL) {
         fprintf(stderr, "Unable to open capture interface\n\t%s\n", errbuf);
@@ -218,16 +222,17 @@ int main(int argc, char* argv[]) {
     log_message("Capturing packets on interface %s\n", devname);
 
     /*
-     * µù¥U¯S©w¨óÄ³ªº¼Æ¾Ú¥]³B²z¦^½Õ
+     * è¨»å†Šç‰¹å®šå”è­°çš„æ•¸æ“šåŒ…è™•ç†å›èª¿
      */
     netdevice_add_proto(p, ETH_ARP, (ptype_handler)&arp_main);
 
     main_proc(p);
 
     /*
-     * ²M²z¸ê·½
+     * æ¸…ç†è³‡æº
      */
     netdevice_close(p);
     fclose(log_file);
     return 0;
 }
+
